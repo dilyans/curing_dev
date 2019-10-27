@@ -1,0 +1,26 @@
+{
+  "sensors": {
+    "dht22_inside_pin": 17,
+    "dht22_outside_pin": 17
+  },
+  "devices": {
+    "fridge": {
+      "initial_state": "on",
+      "pin": 1
+    },
+    "fan": {
+      "initial_state": "on",
+      "pin": 2
+    },
+    "humidifier": {
+      "initial_state": "off",
+      "pin": 3
+    },
+    "dehumidifier": {
+      "initial_state": "off",
+      "pin": 4
+    }
+  },
+  "sensor_update_interval": 4,
+  "server_port": 8080
+}

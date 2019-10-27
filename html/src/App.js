@@ -42,11 +42,11 @@ class App extends React.Component {
 
     handleServerPush(e) {
         const msg = JSON.parse(e);
-        const msgType = Messages.enumValueOf(msg['type']);
+        const msgType = Messages.enumValueOf(msg['cmd']);
         if (msgType === Messages.SENSOR_UPDATE) {
             let newState = {};
             Sensors.enumValues.forEach(s => {
-                    newState[s.valueName] = msg[s.valueName];
+                    newState[s.valueName] = msg['payload'][s.valueName];
                 }
             )
             this.setState(newState);
@@ -54,8 +54,10 @@ class App extends React.Component {
         if (msgType === Messages.DEVICE_UPDATE) {
             let newState = {};
             Devices.enumValues.forEach( d => {
-                newState[d.stateName] =
-                    Devices.enumValueOf(msg['payload'][d.stateName]);
+                if(msg['payload'][d.stateName]) {
+                    newState[d.stateName] =
+                        States.enumValueOf(msg['payload'][d.stateName]);
+                }
             });
             this.setState(newState);
         }

@@ -12,15 +12,26 @@ States.initEnum({
 class Sensors extends Enum{}
 Sensors.initEnum({
     TEMPERATURE: {
-        label: "Temperature",
+        label: "Device Temperature",
         valueName: "t",
         defaultValue: 15
     },
     HUMIDITY: {
-        label: "Humidity",
+        label: "Device Humidity",
         valueName: "h",
         defaultValue: 50
+    },
+    OUT_TEMPERATURE: {
+        label: "Ambient temperature",
+        valueName: "out_t",
+        defaultValue: 15
+    },
+    OUT_HUMIDITY: {
+        label: "Ambient Humidity",
+        valueName: "out_h",
+        defaultValue: 50
     }
+
 })
 
 const Scale = Object.freeze({
