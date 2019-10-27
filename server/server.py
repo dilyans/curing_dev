@@ -1,9 +1,5 @@
-import logging
-import aiohttp
+import asyncio, aiohttp, json, logging, os, weakref
 from aiohttp import web
-import json
-import asyncio
-import weakref
 from datetime import datetime
 from device import Device
 try: # this is available only on raspberry pi
@@ -17,6 +13,7 @@ sockets = set()
 config = None
 devices = {}
 queue = asyncio.Queue()
+today = datetime.today().date()
 
 def create_json_response(cmd, payload):
     data = {
@@ -26,11 +23,57 @@ def create_json_response(cmd, payload):
     return data
 
 
+async def handle_sensor_data(data):
+    min_t = config['conditions']['temperature']['min']
+    max_t = config['conditions']['temperature']['max']
+    min_h = config['conditions']['humidity']['min']
+    max_h = config['conditions']['humidity']['max']
+    fridge = devices['fridge']
+    humidifier = devices['humidifier']
+    dehumidifier = devices['dehumidifier']
+    msg = create_json_response("DEVICE_UPDATE", {})
+    is_fridge_changed = False
+    is_humid_changed = False
+    is_dedumid_changed = False
+    if data['t'] > max_t:
+        is_fridge_changed = fridge.set_state("ON")
+    elif data['t'] < min_t:
+        is_fridge_changed = fridge.set_state("OFF")
+    if data['h'] >= max_h:
+        is_humid_changed = humidifier.set_state("OFF")
+        is_dedumid_changed = dehumidifier.set_state("ON")
+    elif data['h'] <= min_h:
+        is_humid_changed = humidifier.set_state("ON")
+        is_dedumid_changed = dehumidifier.set_state("OFF")
+    else:
+        is_humid_changed = humidifier.set_state("OFF")
+        is_dedumid_changed = dehumidifier.set_state("OFF")
+    if is_fridge_changed:
+        msg['payload'][fridge.name] = fridge.get_state().name
+    if is_humid_changed:
+        msg['payload'][humidifier.name] = humidifier.get_state().name
+    if is_dedumid_changed:
+        msg['payload'][dehumidifier.name] = dehumidifier.get_state().name
+    #msg = create_json_response("SENSOR_UPDATE", current_sensor_data)
+
+    if msg['payload']:
+        await queue.put(msg)
+    return
+
+
+def write_sensor_data(data):
+    global today
+    now = datetime.today()
+    if today != now.date():
+        os.rename(config['datafile'], config['datafile']+"."+today)
+        today = now.date()
+    to_write = now.strftime("%H:%M:%S") + " " + data + "\n"
+    with open(config['datafile'], "a") as f:
+        f.write(to_write)
+        f.flush()
+
 async def curing_control_loop(app):
     while True:
-        now = datetime.now()
-        dt_string = now.strftime("%d/%m/%Y %HH:%MM:%SS")
-        await asyncio.sleep(config["sensor_update_interval"])
         humidity_in, temperature_in = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22,
                         config["sensors"]["dht22_inside_pin"])
         humidity_out, temperature_out = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22,
@@ -43,9 +86,14 @@ async def curing_control_loop(app):
                 "out_t": temperature_out,
                 "out_h": humidity_out
             }
-            log.info('current sensor data: {}:{}:{}:{}', temperature_in,\
-                    humidity_in, temperature_out, humidity_out)
-            await queue.put(current_sensor_data)
+            sensor_data = F'{humidity_in:.2f}:{temperature_in:.2f}:{humidity_out:.2f}:{temperature_out:.2f}'
+            log.info(F'current sensor data: {sensor_data}')
+            write_sensor_data(sensor_data)
+            await handle_sensor_data(current_sensor_data)
+            msg = create_json_response("SENSOR_UPDATE", current_sensor_data)
+            #msg['payload'] = current_sensor_data
+            await queue.put(msg)
+        await asyncio.sleep(config["sensor_update_interval"])
 
 
 async def sensor_data_push(app):
@@ -53,8 +101,8 @@ async def sensor_data_push(app):
     msg = create_json_response("SENSOR_UPDATE",{"t":"1","h":"1"})
     while True:
         item = await queue.get()
-        msg['payload'] = item
-        data = json.dumps(msg)
+        #msg['payload'] = item
+        data = json.dumps(item)
         for ws in set(app['websockets']):
             await ws.send_str(data)
 
@@ -68,9 +116,11 @@ async def websocket_handler(request):
             log.info("got %s on socket: %s", msg.data, request.rel_url)
             data = json.loads(msg.data)
             cmd = data['cmd']
+            # TODO send previous sensor data
             if cmd == 'HISTORY':
                 resp = create_json_response(cmd, json.dumps({}))
                 await ws.send_str(json.dumps(resp, indent=1))
+            # todo - this is not working
             elif cmd == 'SENSOR_UPDATE':
                 resp = create_json_response(cmd, data['payload'])
                 await ws.send_str(json.dumps(resp, indent=1))
@@ -78,14 +128,20 @@ async def websocket_handler(request):
                 for device_name, state in data['payload'].items():
                     device = devices[device_name]
                     device.set_state(state)
-                    resp = create_json_response(cmd, data['payload'])
-                    await ws.send_str(json.dumps(resp, indent=1))
+                msg = create_json_response("DEVICE_UPDATE", {})
+                for name, device in devices.items():
+                    #device = Device(name=key, pin=value['pin'], state=value['initial_state'])
+                    #print("key: {} | value: {}".format(key, value))
+                    msg['payload'][name] = device.get_state().name
+                    await queue.put(msg)
+
+
         elif msg.type == aiohttp.WSMsgType.CLOSE\
                 or msg.type == aiohttp.WSMsgType.CLOSED\
                 or msg.type == aiohttp.WSMsgType.ERROR:
             request.app['websocets'].remove(ws)
             break;
-    print('websocket connection closed')
+    log.info('websocket connection closed')
     return ws
 
 
@@ -114,7 +170,7 @@ async def cleanup_background_tasks(app):
 def init_devices():
     for key, value in config['devices'].items():
         device = Device(name=key, pin=value['pin'], state=value['initial_state'])
-        print("key: {} | value: {}".format(key, value))
+        log.info("key: {} | value: {}".format(key, value))
         devices[key]= device
 
 
