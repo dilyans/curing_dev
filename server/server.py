@@ -149,7 +149,7 @@ async def init_web_server():
     app = web.Application()
     app['websockets'] = weakref.WeakSet()
     app.add_routes([web.get('/ws', websocket_handler)])
-    app.router.add_static('/', path=str('../static'))
+    app.router.add_static('/', path=str('../html/build'))
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
     return app

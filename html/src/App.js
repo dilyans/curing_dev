@@ -27,8 +27,8 @@ class App extends React.Component {
 
     componentDidMount() {
 
-        //const wsUri = 'ws://'+window.location.host+'/ws';
-        const wsUri = 'ws://'+'localhost:8080'+'/ws';
+        const wsUri = 'ws://'+window.location.host+'/ws';
+        //const wsUri = 'ws://'+'localhost:8080'+'/ws';
         const conn = new WebSocket(wsUri);
         this.wsConnection = conn;
         conn.onopen =  () => {
