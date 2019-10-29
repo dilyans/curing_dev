@@ -1,4 +1,4 @@
-import asyncio, aiohttp, json, logging, os, weakref
+import time, asyncio, aiohttp, json, logging, os, weakref, concurrent.futures
 from aiohttp import web
 from datetime import datetime
 from device import Device
@@ -12,8 +12,10 @@ log = logging.getLogger(__name__)
 sockets = set()
 config = None
 devices = {}
-queue = asyncio.Queue()
+ws_queue = asyncio.Queue()
+sensor_queue = asyncio.Queue()
 today = datetime.today().date()
+EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 def create_json_response(cmd, payload):
     data = {
@@ -21,6 +23,42 @@ def create_json_response(cmd, payload):
         'payload': payload
     }
     return data
+
+
+def write_sensor_data(data):
+    global today
+    now = datetime.today()
+    if today != now.date():
+        os.rename(config['datafile'], config['datafile']+"."+today.strftime("%Y-%m-%d"))
+        today = now.date()
+    to_write = now.strftime("%H:%M:%S") + " " + data + "\n"
+    with open(config['datafile'], "a") as f:
+        f.write(to_write)
+        f.flush()
+
+
+def read_sensor():
+    #while True:
+        humidity_in, temperature_in = \
+            Adafruit_DHT.read_retry(Adafruit_DHT.DHT22,
+            config["sensors"]["dht22_inside_pin"])
+        humidity_out, temperature_out = \
+            Adafruit_DHT.read_retry(Adafruit_DHT.DHT22,
+            config["sensors"]["dht22_outside_pin"])
+        if humidity_in is not None and temperature_in is not None and \
+                humidity_out is not None and temperature_out is not None:
+            current_sensor_data = {
+                "t": temperature_in,
+                "h": humidity_in,
+                "out_t": temperature_out,
+                "out_h": humidity_out
+            }
+            sensor_data = F'{humidity_in:.2f}:{temperature_in:.2f}:{humidity_out:.2f}:{temperature_out:.2f}'
+            log.info(F'current sensor data: {sensor_data}')
+            sensor_queue.put_nowait(current_sensor_data)
+            write_sensor_data(sensor_data)
+            return current_sensor_data
+            #time.sleep(config["sensor_update_interval"])
 
 
 async def handle_sensor_data(data):
@@ -57,42 +95,19 @@ async def handle_sensor_data(data):
     #msg = create_json_response("SENSOR_UPDATE", current_sensor_data)
 
     if msg['payload']:
-        await queue.put(msg)
+        await ws_queue.put(msg)
     return
 
 
-def write_sensor_data(data):
-    global today
-    now = datetime.today()
-    if today != now.date():
-        os.rename(config['datafile'], config['datafile']+"."+today)
-        today = now.date()
-    to_write = now.strftime("%H:%M:%S") + " " + data + "\n"
-    with open(config['datafile'], "a") as f:
-        f.write(to_write)
-        f.flush()
-
 async def curing_control_loop(app):
     while True:
-        humidity_in, temperature_in = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22,
-                        config["sensors"]["dht22_inside_pin"])
-        humidity_out, temperature_out = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22,
-                        config["sensors"]["dht22_outside_pin"])
-        if humidity_in is not None and temperature_in is not None and\
-            humidity_out is not None and temperature_out is not None:
-            current_sensor_data = {
-                "t": temperature_in,
-                "h": humidity_in,
-                "out_t": temperature_out,
-                "out_h": humidity_out
-            }
-            sensor_data = F'{humidity_in:.2f}:{temperature_in:.2f}:{humidity_out:.2f}:{temperature_out:.2f}'
-            log.info(F'current sensor data: {sensor_data}')
-            write_sensor_data(sensor_data)
-            await handle_sensor_data(current_sensor_data)
-            msg = create_json_response("SENSOR_UPDATE", current_sensor_data)
-            #msg['payload'] = current_sensor_data
-            await queue.put(msg)
+        loop = asyncio.get_event_loop()
+        current_sensor_data = await loop.run_in_executor(EXECUTOR, read_sensor)
+        print(current_sensor_data)
+        #current_sensor_data = await sensor_queue.get()
+        await handle_sensor_data(current_sensor_data)
+        msg = create_json_response("SENSOR_UPDATE", current_sensor_data)
+        await ws_queue.put(msg)
         await asyncio.sleep(config["sensor_update_interval"])
 
 
@@ -100,7 +115,7 @@ async def sensor_data_push(app):
     log.info('starting sensor monitoring')
     msg = create_json_response("SENSOR_UPDATE",{"t":"1","h":"1"})
     while True:
-        item = await queue.get()
+        item = await ws_queue.get()
         #msg['payload'] = item
         data = json.dumps(item)
         for ws in set(app['websockets']):
@@ -133,14 +148,15 @@ async def websocket_handler(request):
                     #device = Device(name=key, pin=value['pin'], state=value['initial_state'])
                     #print("key: {} | value: {}".format(key, value))
                     msg['payload'][name] = device.get_state().name
-                    await queue.put(msg)
+                    await ws_queue.put(msg)
 
 
         elif msg.type == aiohttp.WSMsgType.CLOSE\
                 or msg.type == aiohttp.WSMsgType.CLOSED\
                 or msg.type == aiohttp.WSMsgType.ERROR:
-            request.app['websocets'].remove(ws)
+            request.app['websockets'].remove(ws)
             break;
+    request.app['websockets'].remove(ws)
     log.info('websocket connection closed')
     return ws
 
@@ -181,9 +197,13 @@ def load_config():
 
 
 def main():
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(
+        format='%(asctime)s %(levelname)-8s [%(filename)s:%(lineno)d]  %(message)s',
+        level=logging.INFO,
+        datefmt='%Y-%m-%d %H:%M:%S')
     load_config()
     init_devices()
+    #threading.Thread(target=read_sensor, args=()).start()
     app = init_web_server()
     web.run_app(app)
 
